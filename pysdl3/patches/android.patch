@@ -1,0 +1,103 @@
+--- PySDL3-0.9.12b1/sdl3/__init__.py	2026-09-04 03:41:26.000000000 +0800
++++ PySDL3-0.9.12b1/sdl3/__init__.py	2026-10-02 15:10:38.756798579 +0800
+@@ -15,6 +15,7 @@
+     assert False, "Unknown architecture."
+ 
+ SDL_SYSTEM, SDL_ARCH = os.uname().sysname if hasattr(os, "uname") else platform.system(), SDL_FORMAT_ARCH(platform.machine())
++SDL_ARCH = "Linux" if SDL_ARCH in ["android", "Android"] else SDL_ARCH
+ SDL_BINARY_EXTENSIONS, SDL_BINARY_PATTERNS = {"Windows": ["dll"], "Darwin": ["dylib"], "Linux": ["so"]}, \
+     {"Windows": ["{}.dll"], "Darwin": ["lib{}.dylib", "{0}.framework/{0}", "{0}.framework/Versions/Current/{0}"], "Linux": ["lib{}.so"]}
+ 
+@@ -52,6 +53,8 @@
+ 
+         sys.stdout.flush()
+ 
++SDL_LOGGER.Log(0, f"PySDL3 (arch: {SDL_ARCH}, platform: {SDL_SYSTEM})")
++
+ def SDL_FIND_BINARIES(libraries: list[str]) -> list[str]:
+     """Search for binaries in the system libraries."""
+     libraries = libraries + [f"{library}d" for library in libraries]
+@@ -722,38 +725,49 @@
+         for module, left, right in zip(SDL_MODULES, [SDL_GetVersion, IMG_Version, MIX_Version, TTF_Version, RTF_Version, NET_Version], [SDL_VERSION, SDL_IMAGE_VERSION, SDL_MIXER_VERSION, SDL_TTF_VERSION, SDL_RTF_VERSION, SDL_NET_VERSION]):
+             if module in __module__.binaryMap and (_ := left()) != right: SDL_LOGGER.Log(SDL_LOGGER.Warning, f"Version mismatch with binary: '{SDL_BINARY_PATTERNS[SDL_SYSTEM][0].format(module)}' (expected: {SDL_VERSIONNUM_STRING(right)}, got: {SDL_VERSIONNUM_STRING(_)}).")
+ 
+-    def SDL_TRY_WRITE_DOCS() -> bool | None:
+-        try:
+-            with open(__doc_file__, "wb") as file:
+-                file.write(SDL_GET_OR_GENERATE_DOCS(raw = raw))
+-
+-            return True
++    # SDL doc loading bug: the original logic only check for __doc__.py file, but when packaged, all
++    # python sources are compiled, so it cannot find the pre-compiled doc file and tries to generate one,
++    # which is unexpected.
++
++    # this is a patch on it: check the file existence first and behave accordingly
++    if os.path.exists(__doc_file__) or not os.path.exists(os.path.join(os.path.dirname(__file__), "__doc__.pyc")):
++        # packaging environment, use original logic
++        def SDL_TRY_WRITE_DOCS() -> bool | None:
++            try:
++                with open(__doc_file__, "wb") as file:
++                    file.write(SDL_GET_OR_GENERATE_DOCS(raw = raw))
++
++                return True
++
++            except OSError as exc:
++                SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to write docs: {exc}.")
++
++        if __doc_generator__ and (os.path.exists(__doc_file__) or SDL_TRY_WRITE_DOCS()):
++            try:
++                if "sdl3.__doc__" in sys.modules: del sys.modules["sdl3.__doc__"]
++                from .__doc__ import * # type: ignore
++                exec(getattr(sys.modules["sdl3.__doc__"], "__doc__"), data := {})
++
++            except (SyntaxError, NameError, TypeError) as exc:
++                import traceback
++                traceback.print_exc()
++                SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to read docs: {exc}.")
++                data = None
++
++            if os.path.exists(__doc_file__) and (not data or "__meta__" not in data or data["__meta__"]["target"] != f"v{__version__}" or data["__meta__"]["system"] != SDL_SYSTEM) and SDL_TRY_WRITE_DOCS():
++                if "sdl3.__doc__" in sys.modules: del sys.modules["sdl3.__doc__"]
++                SDL_LOGGER.Log(SDL_LOGGER.Warning, "Reloading module: 'sdl3.__doc__'...")
++                from .__doc__ import * # type: ignore
+ 
+-        except OSError as exc:
+-            SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to write docs: {exc}.")
+-
+-    if __doc_generator__ and (os.path.exists(__doc_file__) or SDL_TRY_WRITE_DOCS()):
+-        try:
+-            if "sdl3.__doc__" in sys.modules: del sys.modules["sdl3.__doc__"]
+-            from .__doc__ import * # type: ignore
+-            exec(getattr(sys.modules["sdl3.__doc__"], "__doc__"), data := {})
+-
+-        except (SyntaxError, NameError, TypeError) as exc:
+-            import traceback
+-            traceback.print_exc()
+-            SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to read docs: {exc}.")
+-            data = None
+-
+-        if os.path.exists(__doc_file__) and (not data or "__meta__" not in data or data["__meta__"]["target"] != f"v{__version__}" or data["__meta__"]["system"] != SDL_SYSTEM) and SDL_TRY_WRITE_DOCS():
+-            if "sdl3.__doc__" in sys.modules: del sys.modules["sdl3.__doc__"]
+-            SDL_LOGGER.Log(SDL_LOGGER.Warning, "Reloading module: 'sdl3.__doc__'...")
+-            from .__doc__ import * # type: ignore
+-
+-    else:
+-        try:
+-            if not (__frozen__ or __release__):
+-                if os.path.exists(__doc_file__):
+-                    os.remove(__doc_file__)
+-
+-        except PermissionError as exc:
+-            SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to remove docs: {exc}.")
++        else:
++            try:
++                if not (__frozen__ or __release__):
++                    if os.path.exists(__doc_file__):
++                        os.remove(__doc_file__)
++
++            except PermissionError as exc:
++                SDL_LOGGER.Log(SDL_LOGGER.Error, f"Failed to remove docs: {exc}.")
++    else:  # packaged environment, load the compiled doc directly
++        __doc_file__: str = os.path.join(os.path.dirname(__file__), "__doc__.pyc")
++        from .__doc__ import *  # type: ignore
+\ No newline at end of file
